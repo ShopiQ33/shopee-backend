@@ -1,21 +1,19 @@
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
-const fetch = require('node-fetch'); // 若 Node.js 版本較舊需要，Node 18+ 可省略
 
 const app = express();
 
-// 🔥 關鍵 1：必須允許 CORS 與解析 JSON
+// 1. 開啟 CORS 與 JSON 解析
 app.use(cors());
 app.use(express.json());
 
-// 設定蝦皮金鑰（會優先讀取 Render 的 Environment Variables）
+// 設定蝦皮金鑰（從 Render 的 Environment Variables 讀取）
 const APP_ID = process.env.SHOPEE_APP_ID;
 const APP_SECRET = process.env.SHOPEE_APP_SECRET;
 
 app.post('/convert', async (req, res) => {
     try {
-        // 🔥 關鍵 2：拿取前端傳過來的 url 欄位
         const { url } = req.body;
 
         if (!url) {
@@ -35,7 +33,7 @@ app.post('/convert', async (req, res) => {
         const factor = APP_ID + timestamp + query + APP_SECRET;
         const signature = crypto.createHash('sha256').update(factor).digest('hex');
 
-        // 呼叫蝦皮官方 API
+        // 使用 Node.js 內建的原生 fetch 呼叫蝦皮 API
         const shopeeRes = await fetch('https://open-api.affiliate.shopee.tw/graphql', {
             method: 'POST',
             headers: {
@@ -55,7 +53,6 @@ app.post('/convert', async (req, res) => {
         const shortLink = data.data?.generateShortLink?.shortLink;
 
         if (shortLink) {
-            // 成功回傳短連結給前端
             return res.json({ affiliate_url: shortLink });
         } else {
             return res.status(400).json({ error: "無法產生短連結，請確認網址是否為有效蝦皮商品" });
@@ -67,7 +64,6 @@ app.post('/convert', async (req, res) => {
     }
 });
 
-// Render 會自動注入 PORT 變數
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
