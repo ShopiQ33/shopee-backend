@@ -10,20 +10,20 @@ app.use(express.json());
 const APP_ID = (process.env.SHOPEE_APP_ID || '').trim();
 const APP_SECRET = (process.env.SHOPEE_APP_SECRET || '').trim();
 
-// 通用短網址還原函式：支援所有蝦皮商品短網址（自動適應不同商品）
+// 整合線上短網址還原服務的完整 server.js
 async function expandShopeeUrl(inputUrl) {
     try {
         if (!inputUrl.includes('shp.ee') && !inputUrl.includes('shopee.tw/s/') && !inputUrl.includes('s.shopee.tw')) {
             return inputUrl;
         }
 
-        // 透過雲端轉址還原通道，不論哪一件商品都能順利追蹤到最終的長網址
+        // 透過雲端轉址還原 API 自動將 tw.shp.ee 展開
         const response = await fetch(`https://unshorten.me/json/${encodeURIComponent(inputUrl)}`);
         const data = await response.json();
 
         if (data.success && data.resolved_url) {
             let finalUrl = data.resolved_url;
-            return finalUrl.split('?')[0]; // 切掉雜訊參數，留下乾淨的商品長網址
+            return finalUrl.split('?')[0]; // 清除雜訊參數，留下乾淨的商品網址
         }
 
         return inputUrl;
@@ -41,7 +41,7 @@ app.post('/convert', async (req, res) => {
             return res.status(400).json({ error: "缺少 url 參數" });
         }
 
-        // 先將各種商品的短網址自動還原並清理
+        // 自動將短網址還原並清理乾淨
         const cleanTargetUrl = await expandShopeeUrl(url);
         console.log(`轉換處理: ${url} -> 展開後: ${cleanTargetUrl}`);
 
