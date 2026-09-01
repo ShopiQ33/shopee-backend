@@ -7,9 +7,28 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 讀取環境變數並去除前後空白
 const APP_ID = (process.env.SHOPEE_APP_ID || '').trim();
 const APP_SECRET = (process.env.SHOPEE_APP_SECRET || '').trim();
+
+// 【新增】短網址展開與清理函式
+async function expandShopeeUrl(inputUrl) {
+    try {
+        if (!inputUrl.includes('shp.ee') && !inputUrl.includes('shopee.tw/s/') && !inputUrl.includes('s.shopee.tw')) {
+            return inputUrl;
+        }
+
+        const response = await fetch(inputUrl, {
+            method: 'GET',
+            redirect: 'follow'
+        });
+
+        const finalUrl = response.url || inputUrl;
+        return finalUrl.split('?')[0];
+    } catch (error) {
+        console.error("短網址展開失敗:", error.message);
+        return inputUrl;
+    }
+}
 
 app.post('/convert', async (req, res) => {
     try {
@@ -19,14 +38,15 @@ app.post('/convert', async (req, res) => {
             return res.status(400).json({ error: "缺少 url 參數" });
         }
 
-        // 🔥 關鍵修正：GraphQL payload 必須是無換行、無多餘空格的單一行 JSON 字串
+        // 【修改】先將短網址展開並清理乾淨，再組裝進 GraphQL payload
+        const cleanTargetUrl = await expandShopeeUrl(url);
+
         const payload = JSON.stringify({
-            query: `mutation{generateShortLink(input:{originUrl:"${url}"}){shortLink}}`
+            query: `mutation{generateShortLink(input:{originUrl:"${cleanTargetUrl}"}){shortLink}}`
         });
 
         const timestamp = Math.floor(Date.now() / 1000);
         
-        // 蝦皮官方簽章演算公式：SHA256(APP_ID + timestamp + payload + APP_SECRET)
         const factor = `${APP_ID}${timestamp}${payload}${APP_SECRET}`;
         const signature = crypto.createHash('sha256').update(factor).digest('hex');
 
