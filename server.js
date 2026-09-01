@@ -10,7 +10,7 @@ app.use(express.json());
 const APP_ID = (process.env.SHOPEE_APP_ID || '').trim();
 const APP_SECRET = (process.env.SHOPEE_APP_SECRET || '').trim();
 
-// 升級版短網址展開函式：加入 User-Agent 模擬真人瀏覽器，避免被蝦皮防護機制阻擋
+// 升級版短網址展開函式：加入手機版模擬 Headers 與 HTML Canonical 備份解析機制
 async function expandShopeeUrl(inputUrl) {
     try {
         if (!inputUrl.includes('shp.ee') && !inputUrl.includes('shopee.tw/s/') && !inputUrl.includes('s.shopee.tw')) {
@@ -21,15 +21,26 @@ async function expandShopeeUrl(inputUrl) {
             method: 'GET',
             redirect: 'follow',
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Referer': 'https://shopee.tw/'
             }
         });
 
-        const finalUrl = response.url || inputUrl;
+        let finalUrl = response.url;
         
+        // 如果透過轉址抓不到，嘗試從回傳的 HTML 內容中提取真實網址
+        if (!finalUrl || finalUrl.includes('shp.ee') || finalUrl.includes('s.shopee.tw')) {
+            const html = await response.text();
+            const match = html.match(/<link rel="canonical" href="([^"]+)"/) || html.match(/content="(https:\/\/shopee\.tw\/[^"]+)"/);
+            if (match && match[1]) {
+                finalUrl = match[1];
+            }
+        }
+
         // 若展開後依然是短網址，退回原網址
-        if (finalUrl.includes('shp.ee') || finalUrl.includes('s.shopee.tw')) {
+        if (!finalUrl || finalUrl.includes('shp.ee') || finalUrl.includes('s.shopee.tw')) {
             return inputUrl;
         }
 
