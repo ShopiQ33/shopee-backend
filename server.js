@@ -1,38 +1,3 @@
-const express = require('express');
-const cors = require('cors');
-const crypto = require('crypto');
-
-const app = express();
-
-app.use(cors());
-app.use(express.json());
-
-const APP_ID = (process.env.SHOPEE_APP_ID || '').trim();
-const APP_SECRET = (process.env.SHOPEE_APP_SECRET || '').trim();
-
-// 整合線上短網址還原服務的完整 server.js
-async function expandShopeeUrl(inputUrl) {
-    try {
-        if (!inputUrl.includes('shp.ee') && !inputUrl.includes('shopee.tw/s/') && !inputUrl.includes('s.shopee.tw')) {
-            return inputUrl;
-        }
-
-        // 透過雲端轉址還原 API 自動將 tw.shp.ee 展開
-        const response = await fetch(`https://unshorten.me/json/${encodeURIComponent(inputUrl)}`);
-        const data = await response.json();
-
-        if (data.success && data.resolved_url) {
-            let finalUrl = data.resolved_url;
-            return finalUrl.split('?')[0]; // 清除雜訊參數，留下乾淨的商品網址
-        }
-
-        return inputUrl;
-    } catch (error) {
-        console.error("短網址展開失敗:", error.message);
-        return inputUrl;
-    }
-}
-
 app.post('/convert', async (req, res) => {
     try {
         const { url } = req.body;
@@ -41,16 +6,12 @@ app.post('/convert', async (req, res) => {
             return res.status(400).json({ error: "缺少 url 參數" });
         }
 
-        // 自動將短網址還原並清理乾淨
-        const cleanTargetUrl = await expandShopeeUrl(url);
-        console.log(`轉換處理: ${url} -> 展開後: ${cleanTargetUrl}`);
-
+        // 直接把使用者輸入的網址（不管是長還是短）送給蝦皮 API，讓蝦皮自己去解析
         const payload = JSON.stringify({
-            query: `mutation{generateShortLink(input:{originUrl:"${cleanTargetUrl}"}){shortLink}}`
+            query: `mutation{generateShortLink(input:{originUrl:"${url.trim()}"}){shortLink}}`
         });
 
         const timestamp = Math.floor(Date.now() / 1000);
-        
         const factor = `${APP_ID}${timestamp}${payload}${APP_SECRET}`;
         const signature = crypto.createHash('sha256').update(factor).digest('hex');
 
@@ -75,16 +36,11 @@ app.post('/convert', async (req, res) => {
         if (shortLink) {
             return res.json({ affiliate_url: shortLink });
         } else {
-            return res.status(400).json({ error: "無法產生短連結，請確認網址是否為有效蝦皮商品" });
+            return res.status(400).json({ error: "無法產生短連結" });
         }
 
     } catch (err) {
         console.error("伺服器內部錯誤:", err);
         res.status(500).json({ error: "伺服器內部錯誤" });
     }
-});
-
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
 });
