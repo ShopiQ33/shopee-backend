@@ -10,7 +10,7 @@ app.use(express.json());
 const APP_ID = (process.env.SHOPEE_APP_ID || '').trim();
 const APP_SECRET = (process.env.SHOPEE_APP_SECRET || '').trim();
 
-// 【新增】短網址展開與清理函式
+// 升級版短網址展開函式：加入 User-Agent 模擬真人瀏覽器，避免被蝦皮防護機制阻擋
 async function expandShopeeUrl(inputUrl) {
     try {
         if (!inputUrl.includes('shp.ee') && !inputUrl.includes('shopee.tw/s/') && !inputUrl.includes('s.shopee.tw')) {
@@ -19,10 +19,20 @@ async function expandShopeeUrl(inputUrl) {
 
         const response = await fetch(inputUrl, {
             method: 'GET',
-            redirect: 'follow'
+            redirect: 'follow',
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
+            }
         });
 
         const finalUrl = response.url || inputUrl;
+        
+        // 若展開後依然是短網址，退回原網址
+        if (finalUrl.includes('shp.ee') || finalUrl.includes('s.shopee.tw')) {
+            return inputUrl;
+        }
+
         return finalUrl.split('?')[0];
     } catch (error) {
         console.error("短網址展開失敗:", error.message);
@@ -38,8 +48,9 @@ app.post('/convert', async (req, res) => {
             return res.status(400).json({ error: "缺少 url 參數" });
         }
 
-        // 【修改】先將短網址展開並清理乾淨，再組裝進 GraphQL payload
+        // 先將短網址展開並清理乾淨
         const cleanTargetUrl = await expandShopeeUrl(url);
+        console.log(`轉換處理: ${url} -> 展開後: ${cleanTargetUrl}`);
 
         const payload = JSON.stringify({
             query: `mutation{generateShortLink(input:{originUrl:"${cleanTargetUrl}"}){shortLink}}`
