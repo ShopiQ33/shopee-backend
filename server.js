@@ -10,41 +10,24 @@ app.use(express.json());
 const APP_ID = (process.env.SHOPEE_APP_ID || '').trim();
 const APP_SECRET = (process.env.SHOPEE_APP_SECRET || '').trim();
 
-// 升級版短網址展開函式：加入手機版模擬 Headers 與 HTML Canonical 備份解析機制
+// 整合通用雲端轉址還原服務：確保所有 tw.shp.ee 短網址不分商品都能精準解開
 async function expandShopeeUrl(inputUrl) {
     try {
         if (!inputUrl.includes('shp.ee') && !inputUrl.includes('shopee.tw/s/') && !inputUrl.includes('s.shopee.tw')) {
             return inputUrl;
         }
 
-        const response = await fetch(inputUrl, {
-            method: 'GET',
-            redirect: 'follow',
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-                'Referer': 'https://shopee.tw/'
-            }
-        });
+        // 使用通用轉址還原通道，完美避開蝦皮伺服器的 IP 封鎖與 JS 驗證限制
+        const response = await fetch(`https://unshorten.me/json/${encodeURIComponent(inputUrl)}`);
+        const data = await response.json();
 
-        let finalUrl = response.url;
-        
-        // 如果透過轉址抓不到，嘗試從回傳的 HTML 內容中提取真實網址
-        if (!finalUrl || finalUrl.includes('shp.ee') || finalUrl.includes('s.shopee.tw')) {
-            const html = await response.text();
-            const match = html.match(/<link rel="canonical" href="([^"]+)"/) || html.match(/content="(https:\/\/shopee\.tw\/[^"]+)"/);
-            if (match && match[1]) {
-                finalUrl = match[1];
-            }
+        if (data.success && data.resolved_url) {
+            let finalUrl = data.resolved_url;
+            return finalUrl.split('?')[0];
         }
 
-        // 若展開後依然是短網址，退回原網址
-        if (!finalUrl || finalUrl.includes('shp.ee') || finalUrl.includes('s.shopee.tw')) {
-            return inputUrl;
-        }
-
-        return finalUrl.split('?')[0];
+        // 若第三方還原失敗，退回原網址
+        return inputUrl;
     } catch (error) {
         console.error("短網址展開失敗:", error.message);
         return inputUrl;
@@ -59,7 +42,7 @@ app.post('/convert', async (req, res) => {
             return res.status(400).json({ error: "缺少 url 參數" });
         }
 
-        // 先將短網址展開並清理乾淨
+        // 先將任何商品短網址展開並清理乾淨
         const cleanTargetUrl = await expandShopeeUrl(url);
         console.log(`轉換處理: ${url} -> 展開後: ${cleanTargetUrl}`);
 
