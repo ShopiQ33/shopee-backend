@@ -50,7 +50,7 @@ app.post('/convert', async (req, res) => {
         });
 
         const timestamp = Math.floor(Date.now() / 1000);
-        const factor = ${APP_ID}${timestamp}${payload}${APP_SECRET};
+        const factor = `${APP_ID}${timestamp}${payload}${APP_SECRET}`;
 
         const signature = crypto
             .createHash('sha256')
@@ -63,7 +63,7 @@ app.post('/convert', async (req, res) => {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': SHA256 Credential=${APP_ID}, Timestamp=${timestamp}, Signature=${signature}
+                    'Authorization': `SHA256 Credential=${APP_ID}, Timestamp=${timestamp}, Signature=${signature}`
                 },
                 body: payload
             }
@@ -116,5 +116,5 @@ app.get('/', (req, res) => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-    console.log(Server running on port ${PORT});
+    console.log(`Server running on port ${PORT}`);
 });
