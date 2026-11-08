@@ -1,8 +1,9 @@
-
-const express = require('express');
-const crypto = require('crypto');
-
-const app = express();
+// CORS 跨來源設定：允許你的 GitHub Pages 前端連線
+app.use(cors({
+    origin: 'https://shopiq33.github.io',
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 // 接收 JSON 格式請求
 app.use(express.json());
@@ -22,7 +23,6 @@ app.post('/convert', async (req, res) => {
     try {
         const { url } = req.body || {};
 
-        // 檢查網址
         if (!url || typeof url !== 'string' || !url.trim()) {
             return res.status(400).json({
                 error: '缺少有效的 url 參數'
@@ -31,7 +31,6 @@ app.post('/convert', async (req, res) => {
 
         const originUrl = url.trim();
 
-        // 建立 GraphQL 請求
         const payload = JSON.stringify({
             query: `mutation {
                 generateShortLink(
@@ -44,9 +43,7 @@ app.post('/convert', async (req, res) => {
             }`
         });
 
-        // 建立時間戳記及 SHA256 簽名
         const timestamp = Math.floor(Date.now() / 1000);
-
         const factor = `${APP_ID}${timestamp}${payload}${APP_SECRET}`;
 
         const signature = crypto
@@ -54,7 +51,6 @@ app.post('/convert', async (req, res) => {
             .update(factor)
             .digest('hex');
 
-        // 呼叫蝦皮 Affiliate API
         const shopeeRes = await fetch(
             'https://open-api.affiliate.shopee.tw/graphql',
             {
@@ -69,7 +65,6 @@ app.post('/convert', async (req, res) => {
 
         const data = await shopeeRes.json();
 
-        // 檢查蝦皮 API 回應
         if (!shopeeRes.ok || data.errors) {
             console.error(
                 '蝦皮 API 回傳錯誤:',
@@ -82,7 +77,6 @@ app.post('/convert', async (req, res) => {
             });
         }
 
-        // 取得短連結
         const shortLink = data.data?.generateShortLink?.shortLink;
 
         if (shortLink) {
