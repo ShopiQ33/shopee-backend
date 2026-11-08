@@ -1,4 +1,10 @@
-// CORS 跨來源設定：允許你的 GitHub Pages 前端連線
+const express = require('express');
+const crypto = require('crypto');
+const cors = require('cors');
+
+const app = express();
+
+// CORS 跨來源設定
 app.use(cors({
     origin: 'https://shopiq33.github.io',
     methods: ['GET', 'POST', 'OPTIONS'],
