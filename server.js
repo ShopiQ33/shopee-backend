@@ -5,40 +5,46 @@ const cors = require('cors');
 
 const app = express();
 
-// Render Proxy 設定
+// ==================================
+// 1. 基本設定
+// ==================================
+
 app.set('trust proxy', 1);
 
-// 蝦皮 API 環境變數
+const PORT = process.env.PORT || 10000;
+
+const SHOPEE_TIMEOUT = 15000;
+const COUPANG_TIMEOUT = 15000;
+const COUPANG_RESOLVE_TIMEOUT = 10000;
+
+// 蝦皮 API 憑證
 const APP_ID = process.env.APP_ID;
 const APP_SECRET = process.env.APP_SECRET;
 
-// 酷澎 Partners API 環境變數
+// 酷澎 API 憑證
 const COUPANG_ACCESS_KEY = process.env.COUPANG_ACCESS_KEY;
 const COUPANG_SECRET_KEY = process.env.COUPANG_SECRET_KEY;
 
-// 基本設定
-const PORT = process.env.PORT || 10000;
-const SHOPEE_TIMEOUT = 15000;
-const COUPANG_TIMEOUT = 15000;
-
-// 蝦皮憑證仍然是必要設定
+// 蝦皮憑證為必要設定
 if (!APP_ID || !APP_SECRET) {
     console.error('[CONFIG ERROR] 缺少 APP_ID 或 APP_SECRET');
     process.exit(1);
 }
 
-// CORS
+// ==================================
+// 2. CORS 與 JSON
+// ==================================
+
 app.use(cors({
     origin: 'https://shopiq33.github.io',
     methods: ['GET', 'POST', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// JSON 大小限制
 app.use(express.json({ limit: '100kb' }));
 
 // ==================================
-// 1. 請求診斷紀錄
+// 3. 請求診斷紀錄
 // ==================================
 
 app.use((req, res, next) => {
@@ -78,7 +84,7 @@ app.use((req, res, next) => {
 });
 
 // ==================================
-// 2. 健康檢查
+// 4. 健康檢查
 // ==================================
 
 app.get('/', (req, res) => {
@@ -97,7 +103,7 @@ app.get('/health', (req, res) => {
 });
 
 // ==================================
-// 3. 系統資源監控
+// 5. 系統資源監控
 // ==================================
 
 setInterval(() => {
@@ -115,7 +121,109 @@ setInterval(() => {
 }, 60000).unref();
 
 // ==================================
-// 4. 蝦皮短連結轉換（原功能保留）
+// 6. 酷澎短網址解析
+// ==================================
+
+async function resolveCoupangUrl(inputUrl) {
+    const input = new URL(inputUrl);
+
+    const shortDomains = [
+        'coupa.ng'
+    ];
+
+    const productDomains = [
+        'www.tw.coupang.com',
+        'tw.coupang.com'
+    ];
+
+    // 一般商品網址直接使用
+    if (productDomains.includes(input.hostname)) {
+        return input.toString();
+    }
+
+    // 只接受酷澎短網址
+    if (!shortDomains.includes(input.hostname)) {
+        throw new Error('不支援的酷澎網址網域');
+    }
+
+    const controller = new AbortController();
+
+    const timeout = setTimeout(() => {
+        controller.abort();
+    }, COUPANG_RESOLVE_TIMEOUT);
+
+    try {
+        let currentUrl = input;
+
+        // 最多跟隨 5 次重新導向
+        for (let i = 0; i < 5; i++) {
+            const response = await fetch(currentUrl.toString(), {
+                method: 'GET',
+                redirect: 'manual',
+                signal: controller.signal
+            });
+
+            // 已經到達最終頁面
+            if (
+                response.status >= 200 &&
+                response.status < 300
+            ) {
+                if (!productDomains.includes(currentUrl.hostname)) {
+                    throw new Error('短網址沒有導向酷澎台灣商品頁');
+                }
+
+                console.log(
+                    `[COUPANG URL RESOLVED] ${currentUrl.hostname}${currentUrl.pathname}`
+                );
+
+                return currentUrl.toString();
+            }
+
+            // 檢查重新導向
+            if (
+                [301, 302, 303, 307, 308].includes(response.status)
+            ) {
+                const location = response.headers.get('location');
+
+                if (!location) {
+                    throw new Error('短網址沒有提供重新導向位置');
+                }
+
+                const nextUrl = new URL(location, currentUrl);
+
+                if (nextUrl.protocol !== 'https:') {
+                    throw new Error('重新導向網址不是 HTTPS');
+                }
+
+                const allowedRedirectDomains = [
+                    'coupa.ng',
+                    'www.tw.coupang.com',
+                    'tw.coupang.com'
+                ];
+
+                if (!allowedRedirectDomains.includes(nextUrl.hostname)) {
+                    throw new Error('短網址重新導向至不支援的網域');
+                }
+
+                currentUrl = nextUrl;
+                continue;
+            }
+
+            throw new Error(
+                `短網址解析失敗，HTTP ${response.status}`
+            );
+        }
+
+        throw new Error('短網址重新導向次數過多');
+
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+// ==================================
+// 7. 蝦皮推廣連結轉換
+// 原功能保留
 // ==================================
 
 app.post('/convert', async (req, res) => {
@@ -278,7 +386,7 @@ app.post('/convert', async (req, res) => {
 });
 
 // ==================================
-// 5. 酷澎 Partners 推廣連結轉換
+// 8. 酷澎 Partners 推廣連結轉換
 // ==================================
 
 app.post('/coupang/convert', async (req, res) => {
@@ -313,20 +421,27 @@ app.post('/coupang/convert', async (req, res) => {
             });
         }
 
-        const originUrl = url.trim();
-
-        let parsedUrl;
+        // 自動解析酷澎短網址
+        let originUrl;
 
         try {
-            parsedUrl = new URL(originUrl);
-        } catch {
+            originUrl = await resolveCoupangUrl(url.trim());
+        } catch (err) {
+            console.error(
+                `[COUPANG URL ERROR] id=${requestId}`,
+                err.name,
+                err.message
+            );
+
             return res.status(400).json({
                 success: false,
-                error_code: 'INVALID_URL',
-                error: '網址格式不正確',
+                error_code: 'COUPANG_URL_RESOLVE_FAILED',
+                error: err.message,
                 request_id: requestId
             });
         }
+
+        const parsedUrl = new URL(originUrl);
 
         if (parsedUrl.protocol !== 'https:') {
             return res.status(400).json({
@@ -343,19 +458,17 @@ app.post('/coupang/convert', async (req, res) => {
         const apiPath =
             '/v2/providers/affiliate_open_api/apis/openapi/v1/deeplink';
 
-       const apiUrl =
-    `https://api-gateway.tw.coupang.com${apiPath}`;
+        const apiUrl =
+            `https://api-gateway.tw.coupang.com${apiPath}`;
 
-        // Coupang HMAC 日期格式：YYMMDDTHHmmssZ
-        const now = new Date();
-
-        const signedDate = now
+        // HMAC 日期格式：YYMMDDTHHmmssZ
+        const signedDate = new Date()
             .toISOString()
             .replace(/[-:]/g, '')
             .replace(/\.\d{3}/, '')
             .slice(2);
 
-        // HMAC 簽章內容
+        // HMAC 簽章
         const message =
             signedDate + method + apiPath;
 
@@ -372,7 +485,7 @@ app.post('/coupang/convert', async (req, res) => {
         });
 
         console.log(
-            `[COUPANG REQUEST] id=${requestId} 開始呼叫酷澎 Partners API`
+            `[COUPANG REQUEST] id=${requestId} 開始呼叫酷澎 API`
         );
 
         const controller = new AbortController();
@@ -387,10 +500,9 @@ app.post('/coupang/convert', async (req, res) => {
             coupangRes = await fetch(apiUrl, {
                 method,
                 headers: {
-    'Content-Type': 'application/json;charset=UTF-8',
-    'Authorization': authorization,
-    'X-MARKET': 'TW'
-},
+                    'Content-Type': 'application/json;charset=UTF-8',
+                    'Authorization': authorization
+                },
                 body: payload,
                 signal: controller.signal
             });
@@ -417,11 +529,10 @@ app.post('/coupang/convert', async (req, res) => {
             });
         }
 
-        // 酷澎 API 錯誤處理
         if (
             !coupangRes.ok ||
             data.code === 'ERROR' ||
-            data.rCode && data.rCode !== '0'
+            (data.rCode && data.rCode !== '0')
         ) {
             console.error(
                 `[COUPANG ERROR] id=${requestId}` +
@@ -493,7 +604,7 @@ app.post('/coupang/convert', async (req, res) => {
 });
 
 // ==================================
-// 6. 404 處理
+// 9. 404 處理
 // ==================================
 
 app.use((req, res) => {
@@ -506,7 +617,7 @@ app.use((req, res) => {
 });
 
 // ==================================
-// 7. JSON 解析錯誤處理
+// 10. JSON 解析錯誤處理
 // ==================================
 
 app.use((err, req, res, next) => {
@@ -528,7 +639,7 @@ app.use((err, req, res, next) => {
 });
 
 // ==================================
-// 8. 啟動伺服器
+// 11. 啟動伺服器
 // ==================================
 
 const server = app.listen(PORT, '0.0.0.0', () => {
@@ -540,7 +651,8 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`COUPANG_ACCESS_KEY: ${COUPANG_ACCESS_KEY ? '已設定' : '未設定'}`);
     console.log(`COUPANG_SECRET_KEY: ${COUPANG_SECRET_KEY ? '已設定' : '未設定'}`);
     console.log('Shopee API：已啟用');
-    console.log('Coupang Partners API：已啟用（憑證存在時）');
+    console.log('Coupang Partners API：已啟用');
+    console.log('Coupang 短網址解析：已啟用');
     console.log('診斷監控：已啟用');
     console.log('================================');
 });
