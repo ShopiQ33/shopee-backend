@@ -15,7 +15,6 @@ const PORT = process.env.PORT || 10000;
 
 const SHOPEE_TIMEOUT = 15000;
 const COUPANG_TIMEOUT = 15000;
-const COUPANG_RESOLVE_TIMEOUT = 10000;
 
 // 蝦皮 API 憑證
 const APP_ID = process.env.APP_ID;
@@ -121,108 +120,7 @@ setInterval(() => {
 }, 60000).unref();
 
 // ==================================
-// 6. 酷澎短網址解析
-// ==================================
-
-async function resolveCoupangUrl(inputUrl) {
-    const input = new URL(inputUrl);
-
-    const shortDomains = [
-        'coupa.ng'
-    ];
-
-    const productDomains = [
-        'www.tw.coupang.com',
-        'tw.coupang.com'
-    ];
-
-    // 一般商品網址直接使用
-    if (productDomains.includes(input.hostname)) {
-        return input.toString();
-    }
-
-    // 只接受酷澎短網址
-    if (!shortDomains.includes(input.hostname)) {
-        throw new Error('不支援的酷澎網址網域');
-    }
-
-    const controller = new AbortController();
-
-    const timeout = setTimeout(() => {
-        controller.abort();
-    }, COUPANG_RESOLVE_TIMEOUT);
-
-    try {
-        let currentUrl = input;
-
-        // 最多跟隨 5 次重新導向
-        for (let i = 0; i < 5; i++) {
-            const response = await fetch(currentUrl.toString(), {
-                method: 'GET',
-                redirect: 'manual',
-                signal: controller.signal
-            });
-
-            // 已經到達最終頁面
-            if (
-                response.status >= 200 &&
-                response.status < 300
-            ) {
-                if (!productDomains.includes(currentUrl.hostname)) {
-                    throw new Error('短網址沒有導向酷澎台灣商品頁');
-                }
-
-                console.log(
-                    `[COUPANG URL RESOLVED] ${currentUrl.hostname}${currentUrl.pathname}`
-                );
-
-                return currentUrl.toString();
-            }
-
-            // 檢查重新導向
-            if (
-                [301, 302, 303, 307, 308].includes(response.status)
-            ) {
-                const location = response.headers.get('location');
-
-                if (!location) {
-                    throw new Error('短網址沒有提供重新導向位置');
-                }
-
-                const nextUrl = new URL(location, currentUrl);
-
-                if (nextUrl.protocol !== 'https:') {
-                    throw new Error('重新導向網址不是 HTTPS');
-                }
-
-                const allowedRedirectDomains = [
-                    'coupa.ng',
-                    'www.tw.coupang.com',
-                    'tw.coupang.com'
-                ];
-
-                if (!allowedRedirectDomains.includes(nextUrl.hostname)) {
-                    throw new Error('短網址重新導向至不支援的網域');
-                }
-
-                currentUrl = nextUrl;
-                continue;
-            }
-
-            throw new Error(
-                `短網址解析失敗，HTTP ${response.status}`
-            );
-        }
-
-        throw new Error('短網址重新導向次數過多');
-
-    } finally {
-        clearTimeout(timeout);
-    }
-}
-
-// ==================================
-// 7. 蝦皮推廣連結轉換
+// 6. 蝦皮推廣連結轉換
 // 原功能保留
 // ==================================
 
@@ -386,7 +284,8 @@ app.post('/convert', async (req, res) => {
 });
 
 // ==================================
-// 8. 酷澎 Partners 推廣連結轉換
+// 7. 酷澎 Partners 推廣連結轉換
+// 短網址由前台協助展開
 // ==================================
 
 app.post('/coupang/convert', async (req, res) => {
@@ -421,36 +320,49 @@ app.post('/coupang/convert', async (req, res) => {
             });
         }
 
-        // 自動解析酷澎短網址
-        let originUrl;
+        // 僅接受前台已展開的酷澎台灣商品網址
+        const originUrl = url.trim();
+
+        let parsedUrl;
 
         try {
-            originUrl = await resolveCoupangUrl(url.trim());
-        } catch (err) {
-            console.error(
-                `[COUPANG URL ERROR] id=${requestId}`,
-                err.name,
-                err.message
+            parsedUrl = new URL(originUrl);
+        } catch {
+            return res.status(400).json({
+                success: false,
+                error_code: 'INVALID_URL',
+                error: '商品網址格式不正確',
+                request_id: requestId
+            });
+        }
+
+        const allowedDomains = [
+            'www.tw.coupang.com',
+            'tw.coupang.com'
+        ];
+
+        if (
+            parsedUrl.protocol !== 'https:' ||
+            !allowedDomains.includes(parsedUrl.hostname.toLowerCase()) ||
+            parsedUrl.username ||
+            parsedUrl.password
+        ) {
+            console.warn(
+                `[COUPANG URL REJECTED] id=${requestId}` +
+                ` host=${parsedUrl.hostname}`
             );
 
             return res.status(400).json({
                 success: false,
-                error_code: 'COUPANG_URL_RESOLVE_FAILED',
-                error: err.message,
+                error_code: 'INVALID_COUPANG_PRODUCT_URL',
+                error: '請先開啟酷澎短網址，並貼上已展開的台灣商品網址',
                 request_id: requestId
             });
         }
 
-        const parsedUrl = new URL(originUrl);
-
-        if (parsedUrl.protocol !== 'https:') {
-            return res.status(400).json({
-                success: false,
-                error_code: 'INVALID_URL',
-                error: '請使用 HTTPS 商品網址',
-                request_id: requestId
-            });
-        }
+        console.log(
+            `[COUPANG URL VERIFIED] id=${requestId} 商品網址驗證成功`
+        );
 
         // Coupang Partners Deep Link API
         const method = 'POST';
@@ -604,7 +516,7 @@ app.post('/coupang/convert', async (req, res) => {
 });
 
 // ==================================
-// 9. 404 處理
+// 8. 404 處理
 // ==================================
 
 app.use((req, res) => {
@@ -617,7 +529,7 @@ app.use((req, res) => {
 });
 
 // ==================================
-// 10. JSON 解析錯誤處理
+// 9. JSON 解析錯誤處理
 // ==================================
 
 app.use((err, req, res, next) => {
@@ -639,7 +551,7 @@ app.use((err, req, res, next) => {
 });
 
 // ==================================
-// 11. 啟動伺服器
+// 10. 啟動伺服器
 // ==================================
 
 const server = app.listen(PORT, '0.0.0.0', () => {
@@ -652,7 +564,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`COUPANG_SECRET_KEY: ${COUPANG_SECRET_KEY ? '已設定' : '未設定'}`);
     console.log('Shopee API：已啟用');
     console.log('Coupang Partners API：已啟用');
-    console.log('Coupang 短網址解析：已啟用');
+    console.log('Coupang 短網址：由前台協助展開');
     console.log('診斷監控：已啟用');
     console.log('================================');
 });
