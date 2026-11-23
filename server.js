@@ -25,6 +25,10 @@ if (!APP_ID || !APP_SECRET) {
     process.exit(1);
 }
 
+// ==================================
+// CORS
+// ==================================
+
 app.use(cors({
     origin: 'https://shopiq33.github.io',
     methods: ['GET', 'POST', 'OPTIONS'],
@@ -103,7 +107,7 @@ setInterval(() => {
 }, 60000).unref();
 
 // ==================================
-// 網域安全檢查
+// 酷澎網域設定
 // ==================================
 
 const COUPANG_SHORT_HOSTS = [
@@ -143,6 +147,16 @@ function parseSafeUrl(value) {
     }
 }
 
+function isCoupangProductUrl(value) {
+    const parsed = parseSafeUrl(value);
+
+    return !!parsed &&
+        COUPANG_PRODUCT_HOSTS.includes(
+            parsed.hostname.toLowerCase()
+        ) &&
+        parsed.pathname.startsWith('/products/');
+}
+
 function isCoupangInputUrl(value) {
     const parsed = parseSafeUrl(value);
 
@@ -156,13 +170,101 @@ function isCoupangInputUrl(value) {
     );
 }
 
-function isCoupangProductUrl(value) {
-    const parsed = parseSafeUrl(value);
+// ==================================
+// re2 網址直接解析
+// ==================================
 
-    return !!parsed &&
-        COUPANG_PRODUCT_HOSTS.includes(
-            parsed.hostname.toLowerCase()
+// link.tw.coupang.com/re2 網址通常已包含商品識別碼。
+// 優先使用 pageKey，其次使用 deep_link_value 裡的 pId。
+
+function resolveCoupangRe2Url(inputUrl, requestId) {
+    const parsed = parseSafeUrl(inputUrl);
+
+    if (!parsed) return null;
+
+    if (
+        parsed.hostname.toLowerCase() !==
+        'link.tw.coupang.com'
+    ) {
+        return null;
+    }
+
+    if (!parsed.pathname.startsWith('/re2/')) {
+        return null;
+    }
+
+    const params = parsed.searchParams;
+
+    let pageKey = params.get('pageKey');
+
+    // 如果沒有 pageKey，嘗試從 deep_link_value 取 pId。
+    if (!pageKey) {
+        const deepLinkValue = params.get('deep_link_value');
+
+        if (deepLinkValue) {
+            try {
+                const deepLink = new URL(deepLinkValue);
+
+                pageKey = deepLink.searchParams.get('pId');
+            } catch {
+                // 不採用無法解析的 deep link
+            }
+        }
+    }
+
+    const itemId = params.get('itemId');
+    const vendorItemId = params.get('vendorItemId');
+
+    // 商品識別碼只接受數字，避免拼接不安全內容。
+    if (
+        !pageKey ||
+        !/^\d+$/.test(pageKey)
+    ) {
+        console.warn(
+            `[COUPANG RE2] id=${requestId} 找不到有效 pageKey`
         );
+
+        return null;
+    }
+
+    if (
+        itemId &&
+        !/^\d+$/.test(itemId)
+    ) {
+        return null;
+    }
+
+    if (
+        vendorItemId &&
+        !/^\d+$/.test(vendorItemId)
+    ) {
+        return null;
+    }
+
+    // 組成酷澎台灣商品頁。
+    const productUrl = new URL(
+        `/products/${pageKey}`,
+        'https://www.tw.coupang.com'
+    );
+
+    if (itemId) {
+        productUrl.searchParams.set('itemId', itemId);
+    }
+
+    if (vendorItemId) {
+        productUrl.searchParams.set(
+            'vendorItemId',
+            vendorItemId
+        );
+    }
+
+    console.log(
+        `[COUPANG RE2 SUCCESS] id=${requestId}` +
+        ` pageKey=${pageKey}` +
+        ` itemId=${itemId || 'none'}`
+    );
+
+    return productUrl.toString();
 }
 
 // ==================================
@@ -170,6 +272,17 @@ function isCoupangProductUrl(value) {
 // ==================================
 
 async function resolveCoupangUrl(inputUrl, requestId) {
+
+    // 第一優先：解析 re2 網址本身，不必連線展開。
+    const directUrl = resolveCoupangRe2Url(
+        inputUrl,
+        requestId
+    );
+
+    if (directUrl) {
+        return directUrl;
+    }
+
     let currentUrl = inputUrl;
 
     const visited = new Set();
@@ -182,7 +295,10 @@ async function resolveCoupangUrl(inputUrl, requestId) {
 
     for (let i = 0; i <= MAX_REDIRECTS; i++) {
 
-        if (Date.now() - startedAt > COUPANG_RESOLVE_TIMEOUT) {
+        if (
+            Date.now() - startedAt >
+            COUPANG_RESOLVE_TIMEOUT
+        ) {
             throw Object.assign(
                 new Error('酷澎短網址解析逾時'),
                 { code: 'COUPANG_RESOLVE_TIMEOUT' }
@@ -205,6 +321,16 @@ async function resolveCoupangUrl(inputUrl, requestId) {
                 new Error('跳轉至不支援的網域'),
                 { code: 'COUPANG_INVALID_REDIRECT' }
             );
+        }
+
+        // 遇到 re2 時再次嘗試直接提取商品資訊。
+        const directRe2 = resolveCoupangRe2Url(
+            parsed.toString(),
+            requestId
+        );
+
+        if (directRe2) {
+            return directRe2;
         }
 
         if (COUPANG_PRODUCT_HOSTS.includes(hostname)) {
@@ -235,7 +361,8 @@ async function resolveCoupangUrl(inputUrl, requestId) {
 
         const remaining = Math.max(
             1000,
-            COUPANG_RESOLVE_TIMEOUT - (Date.now() - startedAt)
+            COUPANG_RESOLVE_TIMEOUT -
+            (Date.now() - startedAt)
         );
 
         const timeout = setTimeout(
@@ -254,14 +381,20 @@ async function resolveCoupangUrl(inputUrl, requestId) {
                         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
                         'AppleWebKit/537.36 (KHTML, like Gecko) ' +
                         'Chrome/131.0.0.0 Safari/537.36',
+
                     'Accept':
                         'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8',
+
+                    'Accept-Language':
+                        'zh-TW,zh;q=0.9,en;q=0.8',
+
                     'Cache-Control': 'no-cache'
                 },
                 signal: controller.signal
             });
+
         } catch (err) {
+
             if (err.name === 'AbortError') {
                 throw Object.assign(
                     new Error('酷澎短網址解析逾時'),
@@ -273,6 +406,7 @@ async function resolveCoupangUrl(inputUrl, requestId) {
                 new Error('無法連接酷澎短網址'),
                 { code: 'COUPANG_RESOLVE_CONNECTION_ERROR' }
             );
+
         } finally {
             clearTimeout(timeout);
         }
@@ -289,6 +423,7 @@ async function resolveCoupangUrl(inputUrl, requestId) {
         }
 
         if ([301, 302, 303, 307, 308].includes(response.status)) {
+
             const location = response.headers.get('location');
 
             if (!location) {
@@ -302,7 +437,9 @@ async function resolveCoupangUrl(inputUrl, requestId) {
 
             if (
                 nextUrl.protocol !== 'https:' ||
-                !allowedHosts.includes(nextUrl.hostname.toLowerCase()) ||
+                !allowedHosts.includes(
+                    nextUrl.hostname.toLowerCase()
+                ) ||
                 nextUrl.username ||
                 nextUrl.password ||
                 nextUrl.port
@@ -324,28 +461,63 @@ async function resolveCoupangUrl(inputUrl, requestId) {
             );
         }
 
-        // 有些跳轉頁會使用 HTML canonical 或 meta refresh。
-        const contentType = response.headers.get('content-type') || '';
+        const contentType =
+            response.headers.get('content-type') || '';
 
         if (contentType.includes('text/html')) {
+
             const html = await response.text();
 
-            const canonical = html.match(
-                /<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i
-            );
+            // 解析 canonical。
+            const canonicalMatch =
+                html.match(
+                    /<link\b[^>]*\brel=["']canonical["'][^>]*>/i
+                );
 
-            const refresh = html.match(
-                /<meta[^>]+http-equiv=["']refresh["'][^>]+content=["'][^"']*url=([^"']+)["']/i
-            );
+            let candidate = null;
 
-            const candidate = canonical?.[1] || refresh?.[1];
+            if (canonicalMatch) {
+                const hrefMatch =
+                    canonicalMatch[0].match(
+                        /\bhref=["']([^"']+)["']/i
+                    );
+
+                if (hrefMatch) {
+                    candidate = hrefMatch[1];
+                }
+            }
+
+            // 解析 Meta Refresh。
+            if (!candidate) {
+                const refreshMatch =
+                    html.match(
+                        /<meta\b[^>]*http-equiv=["']refresh["'][^>]*>/i
+                    );
+
+                if (refreshMatch) {
+                    const urlMatch =
+                        refreshMatch[0].match(
+                            /content=["'][^"']*url\s*=\s*([^"']+)["']/i
+                        );
+
+                    if (urlMatch) {
+                        candidate = urlMatch[1];
+                    }
+                }
+            }
 
             if (candidate) {
-                const nextUrl = new URL(candidate, parsed);
+
+                const nextUrl = new URL(
+                    candidate.replace(/&amp;/g, '&'),
+                    parsed
+                );
 
                 if (
                     nextUrl.protocol === 'https:' &&
-                    allowedHosts.includes(nextUrl.hostname.toLowerCase())
+                    allowedHosts.includes(
+                        nextUrl.hostname.toLowerCase()
+                    )
                 ) {
                     currentUrl = nextUrl.toString();
                     continue;
@@ -370,12 +542,18 @@ async function resolveCoupangUrl(inputUrl, requestId) {
 // ==================================
 
 app.post('/convert', async (req, res) => {
+
     const requestId = req.requestId;
 
     try {
+
         const { url } = req.body || {};
 
-        if (!url || typeof url !== 'string' || !url.trim()) {
+        if (
+            !url ||
+            typeof url !== 'string' ||
+            !url.trim()
+        ) {
             return res.status(400).json({
                 success: false,
                 error_code: 'INVALID_URL',
@@ -411,6 +589,7 @@ app.post('/convert', async (req, res) => {
         console.log(`[SHOPEE REQUEST] id=${requestId}`);
 
         const controller = new AbortController();
+
         const timeout = setTimeout(
             () => controller.abort(),
             SHOPEE_TIMEOUT
@@ -419,19 +598,24 @@ app.post('/convert', async (req, res) => {
         let shopeeRes;
 
         try {
+
             shopeeRes = await fetch(
                 'https://open-api.affiliate.shopee.tw/graphql',
                 {
                     method: 'POST',
+
                     headers: {
                         'Content-Type': 'application/json',
+
                         'Authorization':
                             `SHA256 Credential=${APP_ID}, Timestamp=${timestamp}, Signature=${signature}`
                     },
+
                     body: payload,
                     signal: controller.signal
                 }
             );
+
         } finally {
             clearTimeout(timeout);
         }
@@ -452,8 +636,10 @@ app.post('/convert', async (req, res) => {
         }
 
         if (!shopeeRes.ok || data.errors) {
+
             console.error(
-                `[SHOPEE ERROR] id=${requestId} status=${shopeeRes.status}`
+                `[SHOPEE ERROR] id=${requestId}` +
+                ` status=${shopeeRes.status}`
             );
 
             return res.status(502).json({
@@ -486,6 +672,7 @@ app.post('/convert', async (req, res) => {
         });
 
     } catch (err) {
+
         console.error(
             `[SHOPEE ERROR] id=${requestId}`,
             err.name,
@@ -496,10 +683,12 @@ app.post('/convert', async (req, res) => {
             err.name === 'AbortError' ? 504 : 500
         ).json({
             success: false,
+
             error_code:
                 err.name === 'AbortError'
                     ? 'SHOPEE_TIMEOUT'
                     : 'BACKEND_ERROR',
+
             error: '蝦皮轉換發生錯誤',
             request_id: requestId
         });
@@ -511,9 +700,11 @@ app.post('/convert', async (req, res) => {
 // ==================================
 
 app.post('/coupang/convert', async (req, res) => {
+
     const requestId = req.requestId;
 
     try {
+
         if (!COUPANG_ACCESS_KEY || !COUPANG_SECRET_KEY) {
             return res.status(503).json({
                 success: false,
@@ -525,7 +716,11 @@ app.post('/coupang/convert', async (req, res) => {
 
         const { url } = req.body || {};
 
-        if (!url || typeof url !== 'string' || !url.trim()) {
+        if (
+            !url ||
+            typeof url !== 'string' ||
+            !url.trim()
+        ) {
             return res.status(400).json({
                 success: false,
                 error_code: 'INVALID_URL',
@@ -547,8 +742,9 @@ app.post('/coupang/convert', async (req, res) => {
 
         let originUrl = inputUrl;
 
-        // 短網址交給後端自動解析
+        // 短網址及 re2 網址交給後端處理。
         if (!isCoupangProductUrl(inputUrl)) {
+
             console.log(
                 `[COUPANG SHORT INPUT] id=${requestId} 開始解析`
             );
@@ -571,6 +767,10 @@ app.post('/coupang/convert', async (req, res) => {
         console.log(
             `[COUPANG URL VERIFIED] id=${requestId} 商品網址驗證成功`
         );
+
+        // ==================================
+        // Coupang API HMAC
+        // ==================================
 
         const method = 'POST';
 
@@ -612,15 +812,19 @@ app.post('/coupang/convert', async (req, res) => {
         let coupangRes;
 
         try {
+
             coupangRes = await fetch(apiUrl, {
                 method,
+
                 headers: {
                     'Content-Type': 'application/json;charset=UTF-8',
                     'Authorization': authorization
                 },
+
                 body: payload,
                 signal: controller.signal
             });
+
         } finally {
             clearTimeout(timeout);
         }
@@ -645,6 +849,7 @@ app.post('/coupang/convert', async (req, res) => {
             data.code === 'ERROR' ||
             (data.rCode && data.rCode !== '0')
         ) {
+
             console.error(
                 `[COUPANG API ERROR] id=${requestId}` +
                 ` status=${coupangRes.status}` +
@@ -654,13 +859,18 @@ app.post('/coupang/convert', async (req, res) => {
             return res.status(502).json({
                 success: false,
                 error_code: 'COUPANG_API_ERROR',
-                error: data.message || data.rMessage || '酷澎 API 轉換失敗',
+                error: data.message ||
+                    data.rMessage ||
+                    '酷澎 API 轉換失敗',
+
                 request_id: requestId,
                 upstream_status: coupangRes.status
             });
         }
 
-        const result = data.data?.[0];
+        const result = Array.isArray(data.data)
+            ? data.data[0]
+            : null;
 
         const shortLink =
             result?.shortenUrl ||
@@ -685,6 +895,7 @@ app.post('/coupang/convert', async (req, res) => {
         });
 
     } catch (err) {
+
         console.error(
             `[COUPANG ERROR] id=${requestId}`,
             err.code || err.name,
@@ -703,6 +914,7 @@ app.post('/coupang/convert', async (req, res) => {
         };
 
         if (err.code && resolveErrors[err.code]) {
+
             return res.status(resolveErrors[err.code]).json({
                 success: false,
                 error_code: err.code,
@@ -747,6 +959,7 @@ app.use((req, res) => {
 // ==================================
 
 app.use((err, req, res, next) => {
+
     console.error('[EXPRESS ERROR]', err.message);
 
     if (res.headersSent) return next(err);
@@ -764,17 +977,28 @@ app.use((err, req, res, next) => {
 // ==================================
 
 const server = app.listen(PORT, '0.0.0.0', () => {
+
     console.log('================================');
     console.log('Affiliate Backend 啟動成功');
     console.log(`Port: ${PORT}`);
+
     console.log(`APP_ID: ${APP_ID ? '已設定' : '未設定'}`);
     console.log(`APP_SECRET: ${APP_SECRET ? '已設定' : '未設定'}`);
-    console.log(`COUPANG_ACCESS_KEY: ${COUPANG_ACCESS_KEY ? '已設定' : '未設定'}`);
-    console.log(`COUPANG_SECRET_KEY: ${COUPANG_SECRET_KEY ? '已設定' : '未設定'}`);
+
+    console.log(
+        `COUPANG_ACCESS_KEY: ${COUPANG_ACCESS_KEY ? '已設定' : '未設定'}`
+    );
+
+    console.log(
+        `COUPANG_SECRET_KEY: ${COUPANG_SECRET_KEY ? '已設定' : '未設定'}`
+    );
+
     console.log('Shopee API：已啟用');
     console.log('Coupang Partners API：已啟用');
-    console.log('Coupang 短網址：後端自動解析');
+    console.log('Coupang re2：直接提取商品識別碼');
+    console.log('Coupang coupa.ng：後端自動解析');
     console.log('診斷監控：已啟用');
+
     console.log('================================');
 });
 
