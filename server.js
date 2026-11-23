@@ -387,9 +387,10 @@ app.post('/coupang/convert', async (req, res) => {
             coupangRes = await fetch(apiUrl, {
                 method,
                 headers: {
-                    'Content-Type': 'application/json;charset=UTF-8',
-                    'Authorization': authorization
-                },
+    'Content-Type': 'application/json;charset=UTF-8',
+    'Authorization': authorization,
+    'X-MARKET': 'TW'
+},
                 body: payload,
                 signal: controller.signal
             });
