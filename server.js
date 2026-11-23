@@ -1,3 +1,4 @@
+
 const express = require('express');
 const crypto = require('crypto');
 const cors = require('cors');
@@ -11,11 +12,16 @@ app.set('trust proxy', 1);
 const APP_ID = process.env.APP_ID;
 const APP_SECRET = process.env.APP_SECRET;
 
+// 酷澎 Partners API 環境變數
+const COUPANG_ACCESS_KEY = process.env.COUPANG_ACCESS_KEY;
+const COUPANG_SECRET_KEY = process.env.COUPANG_SECRET_KEY;
+
 // 基本設定
 const PORT = process.env.PORT || 10000;
 const SHOPEE_TIMEOUT = 15000;
+const COUPANG_TIMEOUT = 15000;
 
-// 啟動時檢查環境變數
+// 蝦皮憑證仍然是必要設定
 if (!APP_ID || !APP_SECRET) {
     console.error('[CONFIG ERROR] 缺少 APP_ID 或 APP_SECRET');
     process.exit(1);
@@ -78,7 +84,7 @@ app.use((req, res, next) => {
 app.get('/', (req, res) => {
     res.status(200).json({
         status: 'ok',
-        message: 'Shopee Backend is running!'
+        message: 'Affiliate Backend is running!'
     });
 });
 
@@ -96,7 +102,6 @@ app.get('/health', (req, res) => {
 
 setInterval(() => {
     const memory = process.memoryUsage();
-
     const usage = process.cpuUsage();
 
     console.log(
@@ -110,7 +115,7 @@ setInterval(() => {
 }, 60000).unref();
 
 // ==================================
-// 4. 蝦皮短連結轉換
+// 4. 蝦皮短連結轉換（原功能保留）
 // ==================================
 
 app.post('/convert', async (req, res) => {
@@ -134,7 +139,6 @@ app.post('/convert', async (req, res) => {
 
         const originUrl = url.trim();
 
-        // 建立 GraphQL Payload
         const payload = JSON.stringify({
             query: `mutation {
                 generateShortLink(
@@ -147,7 +151,6 @@ app.post('/convert', async (req, res) => {
             }`
         });
 
-        // Shopee API 簽名
         const timestamp = Math.floor(Date.now() / 1000);
 
         const factor =
@@ -162,7 +165,6 @@ app.post('/convert', async (req, res) => {
             `[SHOPEE REQUEST] id=${requestId} 開始呼叫蝦皮 API`
         );
 
-        // 設定 15 秒逾時
         const controller = new AbortController();
 
         const timeout = setTimeout(() => {
@@ -252,7 +254,7 @@ app.post('/convert', async (req, res) => {
 
     } catch (err) {
         console.error(
-            `[CONVERT ERROR] id=${requestId}`,
+            `[SHOPEE ERROR] id=${requestId}`,
             err.name,
             err.message
         );
@@ -276,7 +278,221 @@ app.post('/convert', async (req, res) => {
 });
 
 // ==================================
-// 5. 404 處理
+// 5. 酷澎 Partners 推廣連結轉換
+// ==================================
+
+app.post('/coupang/convert', async (req, res) => {
+    const requestId = req.requestId;
+
+    try {
+        if (!COUPANG_ACCESS_KEY || !COUPANG_SECRET_KEY) {
+            console.error(
+                `[COUPANG CONFIG ERROR] id=${requestId} 缺少酷澎 API 憑證`
+            );
+
+            return res.status(503).json({
+                success: false,
+                error_code: 'COUPANG_CONFIG_MISSING',
+                error: '酷澎 API 尚未完成設定',
+                request_id: requestId
+            });
+        }
+
+        const { url } = req.body || {};
+
+        if (
+            !url ||
+            typeof url !== 'string' ||
+            !url.trim()
+        ) {
+            return res.status(400).json({
+                success: false,
+                error_code: 'INVALID_URL',
+                error: '請提供有效的酷澎商品網址',
+                request_id: requestId
+            });
+        }
+
+        const originUrl = url.trim();
+
+        let parsedUrl;
+
+        try {
+            parsedUrl = new URL(originUrl);
+        } catch {
+            return res.status(400).json({
+                success: false,
+                error_code: 'INVALID_URL',
+                error: '網址格式不正確',
+                request_id: requestId
+            });
+        }
+
+        if (parsedUrl.protocol !== 'https:') {
+            return res.status(400).json({
+                success: false,
+                error_code: 'INVALID_URL',
+                error: '請使用 HTTPS 商品網址',
+                request_id: requestId
+            });
+        }
+
+        // Coupang Partners Deep Link API
+        const method = 'POST';
+
+        const apiPath =
+            '/v2/providers/affiliate_open_api/apis/openapi/v1/deeplink';
+
+        const apiUrl =
+            `https://api-gateway.coupang.com${apiPath}`;
+
+        // Coupang HMAC 日期格式：YYMMDDTHHmmssZ
+        const now = new Date();
+
+        const signedDate = now
+            .toISOString()
+            .replace(/[-:]/g, '')
+            .replace(/\.\d{3}/, '')
+            .slice(2);
+
+        // HMAC 簽章內容
+        const message =
+            signedDate + method + apiPath;
+
+        const signature = crypto
+            .createHmac('sha256', COUPANG_SECRET_KEY)
+            .update(message)
+            .digest('hex');
+
+        const authorization =
+            `CEA algorithm=HmacSHA256, access-key=${COUPANG_ACCESS_KEY}, signed-date=${signedDate}, signature=${signature}`;
+
+        const payload = JSON.stringify({
+            coupangUrls: [originUrl]
+        });
+
+        console.log(
+            `[COUPANG REQUEST] id=${requestId} 開始呼叫酷澎 Partners API`
+        );
+
+        const controller = new AbortController();
+
+        const timeout = setTimeout(() => {
+            controller.abort();
+        }, COUPANG_TIMEOUT);
+
+        let coupangRes;
+
+        try {
+            coupangRes = await fetch(apiUrl, {
+                method,
+                headers: {
+                    'Content-Type': 'application/json;charset=UTF-8',
+                    'Authorization': authorization
+                },
+                body: payload,
+                signal: controller.signal
+            });
+        } finally {
+            clearTimeout(timeout);
+        }
+
+        const responseText = await coupangRes.text();
+
+        let data;
+
+        try {
+            data = JSON.parse(responseText);
+        } catch {
+            console.error(
+                `[COUPANG ERROR] id=${requestId} 回傳非 JSON`
+            );
+
+            return res.status(502).json({
+                success: false,
+                error_code: 'COUPANG_INVALID_RESPONSE',
+                error: '酷澎 API 回傳格式異常',
+                request_id: requestId
+            });
+        }
+
+        // 酷澎 API 錯誤處理
+        if (
+            !coupangRes.ok ||
+            data.code === 'ERROR' ||
+            data.rCode && data.rCode !== '0'
+        ) {
+            console.error(
+                `[COUPANG ERROR] id=${requestId}` +
+                ` status=${coupangRes.status}` +
+                ` response=${JSON.stringify(data)}`
+            );
+
+            return res.status(502).json({
+                success: false,
+                error_code: 'COUPANG_API_ERROR',
+                error: data.message || data.rMessage || '酷澎 API 轉換失敗',
+                request_id: requestId,
+                upstream_status: coupangRes.status
+            });
+        }
+
+        const result = data.data?.[0];
+
+        const shortLink =
+            result?.shortenUrl ||
+            result?.shorten_url;
+
+        if (!shortLink) {
+            console.error(
+                `[COUPANG ERROR] id=${requestId} 沒有取得推廣連結`
+            );
+
+            return res.status(502).json({
+                success: false,
+                error_code: 'COUPANG_EMPTY_RESULT',
+                error: '酷澎沒有回傳推廣連結',
+                request_id: requestId
+            });
+        }
+
+        console.log(
+            `[COUPANG SUCCESS] id=${requestId} 轉換成功`
+        );
+
+        return res.status(200).json({
+            success: true,
+            affiliate_url: shortLink,
+            request_id: requestId
+        });
+
+    } catch (err) {
+        console.error(
+            `[COUPANG ERROR] id=${requestId}`,
+            err.name,
+            err.message
+        );
+
+        if (err.name === 'AbortError') {
+            return res.status(504).json({
+                success: false,
+                error_code: 'COUPANG_TIMEOUT',
+                error: '酷澎 API 等待逾時，請稍後重試',
+                request_id: requestId
+            });
+        }
+
+        return res.status(500).json({
+            success: false,
+            error_code: 'COUPANG_BACKEND_ERROR',
+            error: '酷澎轉換發生內部錯誤',
+            request_id: requestId
+        });
+    }
+});
+
+// ==================================
+// 6. 404 處理
 // ==================================
 
 app.use((req, res) => {
@@ -289,7 +505,7 @@ app.use((req, res) => {
 });
 
 // ==================================
-// 6. JSON 解析錯誤處理
+// 7. JSON 解析錯誤處理
 // ==================================
 
 app.use((err, req, res, next) => {
@@ -311,15 +527,19 @@ app.use((err, req, res, next) => {
 });
 
 // ==================================
-// 7. 啟動伺服器
+// 8. 啟動伺服器
 // ==================================
 
 const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('================================');
-    console.log('Shopee Backend 啟動成功');
+    console.log('Affiliate Backend 啟動成功');
     console.log(`Port: ${PORT}`);
     console.log(`APP_ID: ${APP_ID ? '已設定' : '未設定'}`);
     console.log(`APP_SECRET: ${APP_SECRET ? '已設定' : '未設定'}`);
+    console.log(`COUPANG_ACCESS_KEY: ${COUPANG_ACCESS_KEY ? '已設定' : '未設定'}`);
+    console.log(`COUPANG_SECRET_KEY: ${COUPANG_SECRET_KEY ? '已設定' : '未設定'}`);
+    console.log('Shopee API：已啟用');
+    console.log('Coupang Partners API：已啟用（憑證存在時）');
     console.log('診斷監控：已啟用');
     console.log('================================');
 });
