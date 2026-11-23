@@ -343,8 +343,8 @@ app.post('/coupang/convert', async (req, res) => {
         const apiPath =
             '/v2/providers/affiliate_open_api/apis/openapi/v1/deeplink';
 
-        const apiUrl =
-            `https://api-gateway.coupang.com${apiPath}`;
+       const apiUrl =
+    `https://api-gateway.tw.coupang.com${apiPath}`;
 
         // Coupang HMAC 日期格式：YYMMDDTHHmmssZ
         const now = new Date();
