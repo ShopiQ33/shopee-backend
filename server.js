@@ -81,7 +81,60 @@ app.use((req, res, next) => {
 
     next();
 });
+// ==========================================
+// Coupang 短網址直接解析測試
+// ==========================================
 
+app.get('/test-coupa', async (req, res) => {
+    const shortUrl = 'https://coupa.ng/crkvol';
+
+    try {
+        console.log('[TEST COUPA] 開始測試:', shortUrl);
+
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 15000);
+
+        try {
+            const response = await fetch(shortUrl, {
+                method: 'GET',
+                redirect: 'manual',
+                signal: controller.signal,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                }
+            });
+
+            const location = response.headers.get('location');
+
+            console.log('[TEST COUPA] HTTP:', response.status);
+            console.log('[TEST COUPA] Location:', location || '沒有 Location');
+
+            return res.json({
+                success: true,
+                status: response.status,
+                location: location || null,
+                redirected: response.redirected,
+                message: location
+                    ? '取得跳轉網址'
+                    : '沒有取得 Location，需檢查回應內容'
+            });
+
+        } finally {
+            clearTimeout(timer);
+        }
+
+    } catch (error) {
+        console.error('[TEST COUPA ERROR]', error.message);
+
+        return res.status(502).json({
+            success: false,
+            error: error.name === 'AbortError'
+                ? 'TIMEOUT'
+                : error.message
+        });
+    }
+});
 // ==================================
 // 健康檢查
 // ==================================
